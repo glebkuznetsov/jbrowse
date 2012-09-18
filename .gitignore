@@ -18,3 +18,11 @@ jslib/dojo-release-*-src/
 autom4te.cache
 sample_data/raw/tomato
 .prove
+
+# Added by Gleb (not sure why this isn't .gitignored already.
+*.swp
+setup.log
+MYMETA.json
+MYMETA.yml
+gd_data/ # symlink to the genome-designer filesystem
+samtools/
