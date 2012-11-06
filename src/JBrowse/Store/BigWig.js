@@ -1,12 +1,14 @@
 define( [
             'dojo/_base/declare',
             'dojo/_base/lang',
+            'dojo/_base/array',
+            'dojo/_base/url',
             'JBrowse/Store/BigWig/Window',
             'dojo/_base/Deferred',
             'JBrowse/Util',
             'JBrowse/Model/XHRBlob'
         ],
-        function( declare, lang, Window, Deferred, Util, XHRBlob ) {
+        function( declare, lang, array, urlObj, Window, Deferred, Util, XHRBlob ) {
 return declare( null,
  /**
   * @lends JBrowse.Store.BigWig
@@ -28,16 +30,19 @@ return declare( null,
      * @constructs
      */
     constructor: function( args ) {
+
+        this.refSeq = args.refSeq;
+
         var data = args.blob || (function() {
             var url = Util.resolveUrl(
                 args.baseUrl || '/',
                 Util.fillTemplate( args.urlTemplate || 'data.bigwig',
-                                   {'refseq': args.refSeq.name}
+                                   {'refseq': (this.refSeq||{}).name }
                                  )
             );
             return new XHRBlob( url );
         }).call(this);
-        var name = args.name || 'anonymous';
+        var name = args.name || ( data.url && new urlObj( data.url ).path.replace(/^.+\//,'') ) || 'anonymous';
 
         var bwg = this;
 
@@ -45,17 +50,59 @@ return declare( null,
         if( args.callback )
             bwg._loading.then(
                 function() { args.callback(bwg); },
-                function() { args.callback(null, 'Loading failed!'); }
+                function(result) { args.callback(null, result.error || 'Loading failed!'); }
             );
         bwg._loading.then( function() {
                                bwg._loading = null;
                            });
+        bwg._loading.then(
+            dojo.hitch( this, function(result) {
+                            if( result.success )
+                                this.loadSuccess();
+                            else
+                                this.loadFail( result.error || 'BigWig loading failed' ) ;
+                        })
+        );
 
         bwg.data = data;
         bwg.name = name;
+    },
 
+    getGlobalStats: function() {
+        var s = this._stats;
+        if( !s )
+            return {};
+
+        // calc mean and standard deviation if necessary
+        if( !( 'scoreMean' in s ))
+            s.scoreMean = s.scoreSum / s.basesCovered;
+        if( !( 'scoreStdDev' in s ))
+            s.scoreStdDev = this._calcStdFromSums( s.scoreSum, s.scoreSumSquares, s.basesCovered );
+
+        return s;
+    },
+
+    _calcStdFromSums: function( sum, sumSquares, n ) {
+        var variance = sumSquares - sum*sum/n;
+        if (n > 1) {
+	    variance /= n-1;
+        }
+        return variance < 0 ? 0 : Math.sqrt(variance);
+    },
+
+    whenReady: function() {
+        var f = lang.hitch.apply(lang, arguments);
+        if( this._loading ) {
+            this._loading.then( f );
+        } else {
+            f();
+        }
+    },
+
+    load: function() {
+        var bwg = this;
         var headerSlice = bwg.data.slice(0, 512);
-        headerSlice.fetch(function(result) {
+        headerSlice.fetch( function(result) {
             if (!result) {
                 bwg._loading.resolve({ success: false });
                 return;
@@ -112,10 +159,10 @@ return declare( null,
                         var da = new Float64Array( header, bwg.totalSummaryOffset+8, 4 );
                         var s = {
                             basesCovered: ua[0]<<32 | ua[1],
-                            minVal: da[0],
-                            maxVal: da[1],
-                            sumData: da[2],
-                            sumSquares: da[3]
+                            scoreMin: da[0],
+                            scoreMax: da[1],
+                            scoreSum: da[2],
+                            scoreSumSquares: da[3]
                         };
                         bwg._stats = s;
                         // rest of these will be calculated on demand in getGlobalStats
@@ -130,42 +177,13 @@ return declare( null,
             bwg._readChromTree(function() {
                 bwg._loading.resolve({success: true});
             });
-        });
+        },
+        function( error ) { bwg._loading.resolve({success: false, error: error }); }
+       );
     },
 
-    getGlobalStats: function() {
-        var s = this._stats;
-        if( !s )
-            return undefined;
-
-        // calc mean and standard deviation if necessary
-        if( !( 'mean' in s ))
-            s.mean = s.sumData / s.basesCovered;
-        if( !( 'stdDev' in s ))
-            s.stdDev = this._calcStdFromSums( s.sumData, s.sumSquares, s.basesCovered );
-
-        // synonyms for compat
-        s.global_min = s.minVal;
-        s.global_max = s.maxVal;
-
-        return s;
-    },
-
-    _calcStdFromSums: function( sum, sumSquares, n ) {
-        var variance = sumSquares - sum*sum/n;
-        if (n > 1) {
-	    variance /= n-1;
-        }
-        return variance < 0 ? 0 : Math.sqrt(variance);
-    },
-
-    whenReady: function() {
-        var f = lang.hitch.apply(lang, arguments);
-        if( this._loading ) {
-            this._loading.then( f );
-        } else {
-            f();
-        }
+    loadSuccess: function() {},
+    loadFail: function() {
     },
 
     /**
@@ -183,6 +201,11 @@ return declare( null,
 
         this.data.slice( this.chromTreeOffset, udo - this.chromTreeOffset )
             .fetch(function(bpt) {
+                       if( !( Uint8Array && Int16Array && Int32Array ) ) {
+                           var msg = 'Browser does not support typed arrays';
+                           thisB._loading.resolve({success: false, error: msg});
+                           return;
+                       }
                        var ba = new Uint8Array(bpt);
                        var sa = new Int16Array(bpt);
                        var la = new Int32Array(bpt);
@@ -241,6 +264,14 @@ return declare( null,
             return null;
         }
         return v.readWigData(chrName, min, max, callback);
+    },
+
+    iterate: function( start, end, featCallback, finishCallback ) {
+        this.readWigData( 1, this.refSeq.name, start, end, function( features ) {
+            if( features && features.length )
+                array.forEach( features, featCallback );
+            finishCallback();
+        });
     },
 
     getUnzoomedView: function() {

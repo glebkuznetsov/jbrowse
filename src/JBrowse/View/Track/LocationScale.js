@@ -12,12 +12,16 @@ return declare(BlockBased,
      * @constructs
      */
 
-    constructor: function(name, labelClass, posHeight) {
-        BlockBased.call(this, name, name, true, function() {});
-        this.labelClass = labelClass;
-        this.posHeight = posHeight;
-        this.height = posHeight;
+    constructor: function( args ) {//name, labelClass, posHeight) {
+        this.loaded = true;
+        this.labelClass = args.labelClass;
+        this.posHeight = args.posHeight;
+        this.height = args.posHeight;
     },
+
+    // this track has no track label or track menu, stub them out
+    makeTrackLabel: function() {},
+    makeTrackMenu: function() {},
 
     fillBlock: function(blockIndex, block,
                         leftBlock, rightBlock,

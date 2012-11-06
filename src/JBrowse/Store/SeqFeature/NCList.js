@@ -50,9 +50,9 @@ NCList.prototype.load = function() {
 
 NCList.prototype.loadSuccess = function( trackInfo, url ) {
 
-    this.count = trackInfo.featureCount;
+    this.globalStats.featureCount = trackInfo.featureCount;
     // average feature density per base
-    this.density = trackInfo.featureCount / this.refSeq.length;
+    this.globalStats.featureDensity = trackInfo.featureCount / this.refSeq.length;
 
     this.loadNCList( trackInfo, url );
 
@@ -92,20 +92,26 @@ NCList.prototype.iterate = function( startBase, endBase, origFeatCallback, finis
     var accessors    = this.attrs.accessors(),
         /** @inner */
         featCallBack = function( feature, path ) {
-            that._add_getters( accessors.get, feature );
-            feature.tags = accessors.tags;
-            return origFeatCallback( feature, path );
+            // the unique ID is a stringification of the path in the
+            // NCList where the feature lives; it's unique across the
+            // top-level NCList (the top-level NCList covers a
+            // track/chromosome combination)
+            var uniqueID = path.join(",");
+            that._decorate_feature( accessors, feature, uniqueID );
+            return origFeatCallback( feature );
         };
 
     return this.nclist.iterate.call( this.nclist, startBase, endBase, featCallBack, finishCallback );
 };
 
-// helper method to recursively add a .get method to a feature and its
+// helper method to recursively add a .get and .tags methods to a feature and its
 // subfeatures
-NCList.prototype._add_getters = function(getter,feature) {
+NCList.prototype._decorate_feature = function( accessors, feature, id ) {
     var that = this;
-    feature.get = getter;
-    dojo.forEach( feature.get('subfeatures'), function(f) { that._add_getters( getter, f ); } );
+    feature.get = accessors.get;
+    feature.tags = accessors.tags;
+    feature._uniqueID = id;
+    dojo.forEach( feature.get('subfeatures'), function(f,i) { that._decorate_feature( accessors, f, id+'-'+i ); } );
 };
 
 return NCList;

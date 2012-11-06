@@ -30,6 +30,8 @@ use IO::File;
 use Fcntl ":flock";
 use PerlIO::gzip;
 
+use constant DEFAULT_MAX_JSON_DEPTH => 2048;
+
 =head2 new( $outDir, $compress, \%opts )
 
 Constructor.  Takes the directory to work with, boolean flag of
@@ -44,7 +46,7 @@ sub new {
     my ($class, $outDir, $compress, $opts) = @_;
 
     # create JSON object
-    my $json = new JSON;
+    my $json = JSON->new->relaxed->max_depth( DEFAULT_MAX_JSON_DEPTH );
     # set opts
     if (defined($opts) and ref($opts) eq 'HASH') {
         for my $method (keys %$opts) {
@@ -150,8 +152,12 @@ sub get {
         binmode($fh, ":gzip") if $self->{compress};
         flock $fh, LOCK_SH;
         undef $/;
-        $default = $self->{json}->decode(<$fh>)
-            or die "couldn't read from $file: $!";
+        eval {
+            $default = $self->{json}->decode(<$fh>)
+        }; if( $@ ) {
+            die "Error parsing JSON file $file: $@\n";
+        }
+        $default or die "couldn't read from $file: $!";
         $fh->close()
             or die "couldn't close $file: $!";
         $/ = $OLDSEP;
@@ -177,7 +183,13 @@ sub modify {
     if (($fh->stat())[7] > 0) {
         # get data
         my $jsonString = join("", $fh->getlines());
-        $data = $self->{json}->decode($jsonString) if (length($jsonString) > 0);
+        if ( length( $jsonString ) > 0 ) {
+            eval {
+                $data = $self->{json}->decode($jsonString);
+            }; if( $@ ) {
+                die "Error parsing JSON file $file: $@\n";
+            }
+        }
         # prepare file for re-writing
         $fh->seek(0, SEEK_SET);
         $fh->truncate(0);

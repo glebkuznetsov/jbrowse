@@ -12,9 +12,14 @@ return dojo.declare( BlockBased,
      * @constructs
      * @extends JBrowse.View.Track.BlockBased
      */
-    constructor: function(name) {
-        BlockBased.call(this, name, name, true, function() {});
+    constructor: function( args ) {
+        this.loaded = true;
+        this.name = 'gridlines';
     },
+
+    // this track has no track label or track menu, stub them out
+    makeTrackLabel: function() {},
+    makeTrackMenu: function() {},
 
     fillBlock: function(blockIndex, block,
                         leftBlock, rightBlock,

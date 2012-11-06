@@ -1,5 +1,31 @@
-define( ['dojo/_base/declare'],
-        function( declare ) {
+define( [
+            'dojo/_base/declare',
+            'dojo/_base/lang',
+            'dojo/aspect',
+            'dojo/dom-geometry',
+            'JBrowse/View/InfoDialog',
+            'dijit/Dialog',
+            'dijit/Menu',
+            'dijit/PopupMenuItem',
+            'dijit/MenuItem',
+            'dijit/CheckedMenuItem',
+            'dijit/MenuSeparator',
+            'JBrowse/Util'
+        ],
+        function( declare,
+                  lang,
+                  aspect,
+                  domGeom,
+                  InfoDialog,
+                  Dialog,
+                  dijitMenu,
+                  dijitPopupMenuItem,
+                  dijitMenuItem,
+                  dijitCheckedMenuItem,
+                  dijitMenuSeparator,
+                  Util
+                ) {
+
 return declare( null,
 /**
  * @lends JBrowse.View.Track.BlockBased.prototype
@@ -9,14 +35,32 @@ return declare( null,
      * Base class for all JBrowse tracks.
      * @constructs
      */
-    constructor: function(name, key, loaded, changeCallback) {
-        this.name = name;
-        this.key = key;
-        this.loaded = loaded;
-        this.changed = changeCallback || function() {};
+    constructor: function( args ) {
+        args = args || {};
+
+        // merge our config with the config defaults
+        this.config = args.config || {};
+        this.config = Util.deepUpdate( dojo.clone( this._defaultConfig() ), this.config );
+
+        this.refSeq = args.refSeq;
+        this.name = args.label || this.config.label;
+        this.key = args.key || this.config.key || this.name;
+        this.loaded = false;
+        this._changedCallback = args.changeCallback || function(){};
         this.height = 0;
         this.shown = true;
         this.empty = false;
+        this.browser = args.browser;
+        this.store = args.store;
+    },
+
+    /**
+     * Returns object holding the default configuration for this track
+     * type.  Might want to override in subclasses.
+     * @private
+     */
+    _defaultConfig: function() {
+        return {};
     },
 
     load: function(url) {
@@ -33,13 +77,17 @@ return declare( null,
     },
 
     loadFail: function(error) {
-        if( error.status != 404 )
-            console.error(''+error);
-        this.empty = true;
+        console.error(''+error);
+        if( error.status == 404 ) {
+            this.empty = true;
+        } else  {
+            this.error = error;
+        }
         this.setLoaded();
     },
 
     heightUpdate: function(height, blockIndex) {
+
         if (!this.shown) {
             this.heightUpdateCallback(0);
             return;
@@ -49,18 +97,18 @@ return declare( null,
             this.blockHeights[blockIndex] = height;
 
         this.height = Math.max( this.height, height );
+
         if ( ! this.inShowRange ) {
             this.heightUpdateCallback( Math.max( this.labelHeight, this.height ) );
         }
     },
 
     setViewInfo: function( genomeView, heightUpdate, numBlocks,
-                           trackDiv, labelDiv,
+                           trackDiv,
                            widthPct, widthPx, scale) {
         this.genomeView = genomeView;
         this.heightUpdateCallback = heightUpdate;
         this.div = trackDiv;
-        this.label = labelDiv;
         this.widthPct = widthPct;
         this.widthPx = widthPx;
 
@@ -75,7 +123,46 @@ return declare( null,
         this.labelHTML = "";
         this.labelHeight = 0;
 
+        if( ! this.label ) {
+            this.makeTrackLabel();
+        }
         this.setLabel( this.key );
+    },
+
+    makeTrackLabel: function() {
+        var labelDiv = dojo.create(
+            'div', {
+                className: "track-label dojoDndHandle",
+                id: "label_" + this.name,
+                style: {
+                    position: 'absolute',
+                    top: 0
+                }
+            },this.div);
+
+        this.label = labelDiv;
+
+        if ( ( this.config.style || {} ).trackLabelCss){
+            labelDiv.style.cssText += ";" + trackConfig.style.trackLabelCss;
+        }
+
+        var closeButton = dojo.create('div',{
+            className: 'track-close-button',
+            onclick: dojo.hitch(this,function(evt){
+                this.browser.view.suppressDoubleClick( 100 );
+                this.browser.publish( '/jbrowse/v1/v/tracks/hide', [this.config]);
+                evt.stopPropagation();
+            })
+        },labelDiv);
+        var labelText = dojo.create('span', { className: 'track-label-text' }, labelDiv );
+        var menuButton = dojo.create('div',{
+            className: 'track-menu-button'
+        },labelDiv);
+        dojo.create('div', {}, menuButton ); // will be styled with an icon by CSS
+        this.labelMenuButton = menuButton;
+
+        // make the track menu with things like 'save as'
+        this.makeTrackMenu();
     },
 
 
@@ -108,6 +195,7 @@ return declare( null,
                 this._hideBlock(i);
         }
         this.initBlocks();
+        this.makeTrackMenu();
     },
 
     setLabel: function(newHTML) {
@@ -133,7 +221,8 @@ return declare( null,
     /**
      * Stub.
      */
-    endZoom: function(destScale, destBlockBases) {},
+    endZoom: function(destScale, destBlockBases) {
+    },
 
 
     showRange: function(first, last, startBase, bpPerBlock, scale,
@@ -234,14 +323,36 @@ return declare( null,
 
     setLoaded: function() {
         this.loaded = true;
-        this.hideAll();
         this.changed();
     },
 
-    _loadingBlock: function(blockDiv) {
-        blockDiv.appendChild(document.createTextNode("Loading..."));
-        blockDiv.style.backgroundColor = "#eee";
-        return 50;
+    changed: function() {
+        this.hideAll();
+        if( this._changedCallback )
+            this._changedCallback();
+    },
+
+    fillLoading: function( blockIndex, block ) {
+        var msgDiv = dojo.create(
+            'div', {
+                className: 'loading',
+                innerHTML: '<div class="text">Loading</span>',
+                title: 'Loading data...',
+                style: { visibility: 'hidden' }
+            }, block );
+        window.setTimeout(function() { msgDiv.style.visibility = 'visible'; }, 200);
+        this.heightUpdate( dojo.position(msgDiv).h, blockIndex );
+    },
+
+    fillError: function( blockIndex, block ) {
+        var msgDiv = dojo.create(
+            'div', {
+                className: 'error',
+                innerHTML: '<h2>Error</h2><div class="text">This track could not be displayed, possibly because your browser does not support the necessary technology.</div>'
+                    +(this.error ? '<div class="codecaption">Diagnostic message</div><code>'+this.error+'</code>' : '' ),
+                title: 'An error occurred'
+            }, block );
+            this.heightUpdate( dojo.position(msgDiv).h, blockIndex );
     },
 
     _showBlock: function(blockIndex, startBase, endBase, scale,
@@ -264,20 +375,18 @@ return declare( null,
         this.blocks[blockIndex] = blockDiv;
         this.div.appendChild(blockDiv);
 
-        if (this.loaded) {
-            this.fillBlock(blockIndex,
-                           blockDiv,
-                           this.blocks[blockIndex - 1],
-                           this.blocks[blockIndex + 1],
-                           startBase,
-                           endBase,
-                           scale,
-                           this.widthPx,
-                           containerStart,
-                           containerEnd);
-        } else {
-            this._loadingBlock(blockDiv);
-        }
+        var args = [blockIndex,
+                    blockDiv,
+                    this.blocks[blockIndex - 1],
+                    this.blocks[blockIndex + 1],
+                    startBase,
+                    endBase,
+                    scale,
+                    this.widthPx,
+                    containerStart,
+                    containerEnd];
+
+        this[ this.error ? 'fillError' : this.loaded ? 'fillBlock' : 'fillLoading' ].apply( this, args );
     },
 
     moveBlocks: function(delta) {
@@ -365,6 +474,17 @@ return declare( null,
         } else {
             this.initBlocks();
         }
+
+        this.makeTrackMenu();
+    },
+
+    fillMessage: function( blockIndex, block, message, class_ ) {
+        var msgDiv = dojo.create(
+            'div', {
+                className: class_ || 'message',
+                innerHTML: message
+            }, block );
+        this.heightUpdate( dojo.position(msgDiv).h, blockIndex );
     },
 
     /**
@@ -374,7 +494,345 @@ return declare( null,
      */
     updateStaticElements: function( /**Object*/ coords ) {
         this.window_info = dojo.mixin( this.window_info || {}, coords );
+        if( this.label )
+            this.label.style.left = coords.x+'px';
+    },
+
+    /**
+     * Render a dijit menu from a specification object.
+     *
+     * @param menuTemplate definition of the menu's structure
+     * @param context {Object} optional object containing the context
+     *   in which any click handlers defined in the menu should be
+     *   invoked, containing thing like what feature is being operated
+     *   upon, the track object that is involved, etc.
+     * @param parent {dijit.Menu|...} parent menu, if this is a submenu
+     */
+    _renderContextMenu: function( /**Object*/ menuStructure, /** Object */ context, /** dijit.Menu */ parent ) {
+       if ( !parent )
+            parent = new dijitMenu();
+
+        for ( key in menuStructure ) {
+            var spec = menuStructure [ key ];
+            try {
+                if ( spec.children ) {
+                    var child = new dijitMenu();
+                    parent.addChild( child );
+                    parent.addChild( new dijitPopupMenuItem(
+                                         {
+                                             popup : child,
+                                             label : spec.label
+                                         }));
+                    this._renderContextMenu( spec.children, context, child );
+                }
+                else {
+                    var menuConf = dojo.clone( spec );
+                    if( menuConf.action || menuConf.url || menuConf.href ) {
+                        menuConf.onClick = this._makeClickHandler( spec, context );
+                    }
+                    // only draw other menu items if they do something when clicked.
+                    // drawing menu items that do nothing when clicked
+                    // would frustrate users.
+                    if( menuConf.label && !menuConf.onClick )
+                        menuConf.disabled = true;
+
+                    // currently can only use preloaded types
+                    var class_ = {
+                        'dijit/MenuItem':        dijitMenuItem,
+                        'dijit/CheckedMenuItem': dijitCheckedMenuItem,
+                        'dijit/MenuSeparator':   dijitMenuSeparator
+                    }[spec.type] || dijitMenuItem;
+
+                    parent.addChild( new class_( menuConf ) );
+                }
+            } catch(e) {
+                console.error('failed to render menu item: '+e);
+            }
+        }
+        return parent;
+    },
+
+    _makeClickHandler: function( inputSpec, context ) {
+        var track  = this;
+
+        if( typeof inputSpec == 'function' ) {
+            inputSpec = { action: inputSpec };
+        }
+        else if( typeof inputSpec == 'undefined' ) {
+            console.error("Undefined click specification, cannot make click handler");
+            return function() {};
+        }
+
+        var handler = function ( evt ) {
+            if( track.genomeView.dragging )
+                return;
+
+            var ctx = context || this;
+            var spec = track._processMenuSpec( dojo.clone( inputSpec ), ctx );
+            var url = spec.url || spec.href;
+            spec.url = url;
+            var style = dojo.clone( spec.style || {} );
+
+            // try to understand the `action` setting
+            spec.action = spec.action ||
+                ( url          ? 'iframeDialog'  :
+                  spec.content ? 'contentDialog' :
+                                 false
+                );
+            spec.title = spec.title || spec.label;
+
+            if( typeof spec.action == 'string' ) {
+                // treat `action` case-insensitively
+                spec.action = {
+                    iframedialog:   'iframeDialog',
+                    iframe:         'iframeDialog',
+                    contentdialog:  'contentDialog',
+                    content:        'contentDialog',
+                    baredialog:     'bareDialog',
+                    bare:           'bareDialog',
+                    xhrdialog:      'xhrDialog',
+                    xhr:            'xhrDialog',
+                    newwindow:      'newWindow',
+                    "_blank":       'newWindow'
+                }[(''+spec.action).toLowerCase()];
+
+                if( spec.action == 'newWindow' )
+                    window.open( url, '_blank' );
+                else if( spec.action in { iframeDialog:1, contentDialog:1, xhrDialog:1, bareDialog: 1} )
+                    track._openDialog( spec, evt, ctx );
+            }
+            else if( typeof spec.action == 'function' ) {
+                spec.action.call( ctx, evt );
+            }
+            else {
+                return;
+            }
+        };
+
+        // if there is a label, set it on the handler so that it's
+        // accessible for tooltips or whatever.
+        if( inputSpec.label )
+            handler.label = inputSpec.label;
+
+        return handler;
+    },
+
+    /**
+     * @returns {String} string of HTML that prints the detailed metadata about this track
+     */
+    _trackDetailsContent: function() {
+        var details = '<div class="detail">';
+        var fmt = dojo.hitch(this, '_fmtDetailField');
+        details += fmt( 'Name', this.key || this.name );
+        var metadata = dojo.clone( this.getMetadata() );
+        delete metadata.key;
+        delete metadata.label;
+        if( typeof metadata.conf == 'object' )
+            delete metadata.conf;
+
+        var md_keys = [];
+        for( var k in metadata )
+            md_keys.push(k);
+        // TODO: maybe do some intelligent sorting of the keys here?
+        dojo.forEach( md_keys, function(key) {
+                          details += fmt( Util.ucFirst(key), metadata[key] );
+                      });
+        details += "</div>";
+        return details;
+    },
+
+    getMetadata: function() {
+        return this.browser && this.browser.trackMetaDataStore ? this.browser.trackMetaDataStore.getItem(this.name) :
+                                          this.config.metadata ? this.config.metadata :
+                                                                 {};
+    },
+
+    _fmtDetailField: function( title, val, class_ ) {
+        var valType = typeof val;
+        if( valType == 'boolean' )
+            val = val ? 'yes' : 'no';
+        else if( valType == 'undefined' || val === null )
+            return '';
+        else if( lang.isArray( val ) )
+            val = val.join(' ');
+        class_ = class_ || title.replace(/\s+/g,'_').toLowerCase();
+        return '<div class="field_container"><h2 class="field '+class_+'">'+title+'</h2> <div class="value '+class_+'">'+val+'</div></div>';
+    },
+
+
+    /**
+     * @returns {Array} menu options for this track's menu (usually contains save as, etc)
+     */
+    _trackMenuOptions: function() {
+        return [
+            { label: 'About this track',
+              title: 'About track: '+(this.key||this.name),
+              iconClass: 'jbrowseIconHelp',
+              action: 'contentDialog',
+              content: dojo.hitch(this,'_trackDetailsContent')
+            }
+        ];
+    },
+
+
+    _processMenuSpec: function( spec, context ) {
+        for( var x in spec ) {
+            if( typeof spec[x] == 'object' )
+                spec[x] = this._processMenuSpec( spec[x], context );
+            else
+                spec[x] = this.template( context.feature, this._evalConf( context, spec[x], x ) );
+        }
+        return spec;
+    },
+
+    /**
+     * Get the value of a conf variable, evaluating it if it is a
+     * function.  Note: does not template it, that is a separate step.
+     *
+     * @private
+     */
+    _evalConf: function( context, confVal, confKey ) {
+
+        // list of conf vals that should not be run immediately on the
+        // feature data if they are functions
+        var dontRunImmediately = {
+            action: 1,
+            click: 1,
+            content: 1
+        };
+
+        return typeof confVal == 'function' && !dontRunImmediately[confKey]
+            ? confVal.apply( context, context.callbackArgs || [] )
+            : confVal;
+    },
+
+    _openDialog: function( spec, evt, context ) {
+        context = context || {};
+        var type = spec.action;
+        type = type.replace(/Dialog/,'');
+        var featureName = context.feature && (context.feature.get('name')||context.feature.get('id'));
+        var dialogOpts = {
+            "class": "popup-dialog popup-dialog-"+type,
+            title: spec.title || spec.label || ( featureName ? featureName +' details' : "Details"),
+            style: dojo.clone( spec.style || {} )
+        };
+        if( spec.dialog )
+            declare.safeMixin( dialogOpts, spec.dialog );
+
+        var dialog;
+
+        // if dialog == xhr, open the link in a dialog
+        // with the html from the URL just shoved in it
+        if( type == 'xhr' || type == 'content' ) {
+            if( type == 'xhr' )
+                dialogOpts.href = spec.url;
+
+            dialog = new InfoDialog( dialogOpts );
+            context.dialog = dialog;
+
+            if( type == 'content' )
+                dialog.set( 'content', this._evalConf( context, spec.content, null ) );
+
+            delete context.dialog;
+        }
+        else if( type == 'bare' ) {
+            dialog = new Dialog( dialogOpts );
+            context.dialog = dialog;
+            dialog.set( 'content', this._evalConf( context, spec.content, null ) );
+            delete context.dialog;
+        }
+        // open the link in a dialog with an iframe
+        else if( type == 'iframe' ) {
+            dojo.safeMixin( dialogOpts.style, {width: '90%', height: '90%'});
+            dialogOpts.draggable = false;
+
+            var container = dojo.create('div', {}, document.body);
+            var iframe = dojo.create(
+                'iframe', {
+                    width: '100%', height: '100%',
+                    tabindex: "0",
+                    style: { border: 'none' },
+                    src: spec.url
+                }, container
+            );
+            dialog = new Dialog( dialogOpts, container );
+            dojo.create( 'a', {
+                             href: spec.url,
+                             target: '_blank',
+                             className: 'dialog-new-window',
+                             title: 'open in new window',
+                             onclick: dojo.hitch(dialog,'hide'),
+                             innerHTML: spec.url
+                         }, dialog.titleBar );
+            var updateIframeSize = function() {
+                // hitch a ride on the dialog box's
+                // layout function, which is called on
+                // initial display, and when the window
+                // is resized, to keep the iframe
+                // sized to fit exactly in it.
+                var cDims = domGeom.getMarginBox( dialog.domNode );
+                iframe.width  = cDims.w;
+                iframe.height = cDims.h - domGeom.getMarginBox(dialog.titleBar).h - 2;
+            };
+            aspect.after( dialog, 'layout', updateIframeSize );
+            aspect.after( dialog, 'show', updateIframeSize );
+        }
+
+        // destroy the dialog after it is hidden
+        aspect.after( dialog, 'hide', function() { dialog.destroyRecursive(); });
+
+        // show the dialog
+        dialog.show();
+    },
+
+    /**
+     * Given a string with template callouts, interpolate them with
+     * data from the given object.  For example, "{foo}" is replaced
+     * with whatever is returned by obj.get('foo')
+     */
+    template: function( /** Object */ obj, /** String */ template ) {
+        if( typeof template != 'string' || !obj )
+            return template;
+
+        var valid = true;
+        if ( template ) {
+            return template.replace(
+                    /\{([^}]+)\}/g,
+                    function(match, group) {
+                        var val = obj ? obj.get( group.toLowerCase() ) : undefined;
+                        if (val !== undefined)
+                            return val;
+                        else {
+                            return '';
+                        }
+                    });
+        }
+        return undefined;
+    },
+
+    /**
+     * Makes and installs the dropdown menu showing operations available for this track.
+     * @private
+     */
+    makeTrackMenu: function() {
+        var options = this._trackMenuOptions();
+        if( options && options.length && this.label && this.labelMenuButton ) {
+
+            // remove our old track menu if we have one
+            if( this.trackMenu )
+                this.trackMenu.destroyRecursive();
+
+            // render and bind our track menu
+            var menu = this._renderContextMenu( options, { menuButton: this.labelMenuButton, track: this, browser: this.browser, refSeq: this.refSeq } );
+            menu.startup();
+            menu.set('leftClickToOpen', true );
+            menu.bindDomNode( this.labelMenuButton );
+            menu.set('leftClickToOpen',  false);
+            menu.bindDomNode( this.label );
+            this.trackMenu = menu;
+        }
     }
+
 });
 });
 

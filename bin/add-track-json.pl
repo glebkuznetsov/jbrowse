@@ -2,6 +2,10 @@
 use strict;
 use warnings;
 
+use FindBin qw($RealBin);
+use lib "$RealBin/../src/perl5";
+use JBlibs;
+
 use Pod::Usage;
 
 use JSON 2;
@@ -18,8 +22,15 @@ my $json_fh =
     };
 my $track_data = $j->decode( do{ local $/; scalar <$json_fh> } );
 
+# if it's a single definition, coerce to an array
+if( ref $track_data eq 'HASH' ) {
+    $track_data = [ $track_data ];
+}
+
 # validate the track JSON structure
-$track_data->{label} or die "invalid track JSON: missing a label element\n";
+for my $def ( @$track_data ) {
+    $def->{label} or die "invalid track JSON: missing a label element\n";
+}
 
 # read and parse the target file
 my $target_file = shift @ARGV or pod2usage();
@@ -33,7 +44,19 @@ my $target_file_data = eval {
     die "error reading target file: $@\n";
 }
 
-push @{ $target_file_data->{tracks} ||= [] }, $track_data;
+for my $def ( @$track_data ) {
+    for( my $i = 0; $i < @{$target_file_data->{tracks}|| []}; $i++ ) {
+        my $track = $target_file_data->{tracks}[$i];
+        if( $track->{label} eq $def->{label} ) {
+            $target_file_data->{tracks}[$i] = $def;
+            undef $def;
+        }
+    }
+
+    if( $def ) {
+        push @{ $target_file_data->{tracks} ||= [] }, $def;
+    }
+}
 
 {
     open my $fh, '>', $target_file or die "$! writing $target_file";

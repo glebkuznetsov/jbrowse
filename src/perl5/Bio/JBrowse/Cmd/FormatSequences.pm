@@ -18,7 +18,8 @@ use File::Path 'mkpath';
 
 use POSIX;
 
-use JsonGenerator;
+use JSON 2;
+use JsonFileStorage;
 use FastaDatabase;
 
 sub option_defaults {(
@@ -37,6 +38,7 @@ sub option_definitions {(
     "refids=s",
     "compress",
     "help|h|?",
+    "nohash"
 )}
 
 sub run {
@@ -46,18 +48,13 @@ sub run {
     my $refs = $self->opt('refs');
     my $compress = $self->opt('compress');
 
+    $self->{storage} = JsonFileStorage->new( $self->opt('out'), $self->opt('compress'), { pretty => 0 } );
+
     pod2usage( 'must provide either a --fasta, --gff, or --conf option' )
         unless defined $self->opt('gff') || $self->opt('conf') || $self->opt('fasta');
 
     my $chunkSize = $self->opt('chunksize');
     $chunkSize *= 4 if $compress;
-
-    # $seqRel is the path relative to --out
-    my $seqRel = "seq";
-    my $seqDir = catdir( $self->opt('out'), $seqRel );
-
-    mkpath( $self->opt('out') );
-    mkpath( $seqDir ) unless $self->opt('noseq');
 
     my %refSeqs;
     my $db;
@@ -102,7 +99,11 @@ sub run {
             $refs = join (",", $db->seq_ids);
         }
     } elsif ( $self->opt('conf') ) {
-        my $config = JsonGenerator::readJSON( $self->opt('conf') );
+        my $config = decode_json( do {
+            local $/;
+            open my $f, '<', $self->opt('conf') or die "$! reading ".$self->opt('conf');
+            scalar <$f>
+        });
 
         eval "require $config->{db_adaptor}; 1" or die $@;
 
@@ -126,6 +127,11 @@ sub run {
     if ( defined $self->opt('refids') ) {
         foreach my $refid (split ",", $self->opt('refids')) {
             my $seg = $db->segment(-db_id => $refid);
+            unless( $seg ) {
+                warn "WARNING: Reference sequence with -db_id '$refid' not found in input.\n";
+                next;
+            }
+
             my $refInfo = {
                 name => $self->refName($seg),
                 id => $refid,   #keep ID for later querying
@@ -135,11 +141,9 @@ sub run {
                 };
 
             unless( $self->opt('noseq') ) {
-                my $refDir = catdir($seqDir,$refInfo->{name});
-                $self->exportSeqChunks($refDir, $compress, $chunkSize, $db,
+                $self->exportSeqChunks( $refInfo, $chunkSize, $db,
                                        [-db_id => $refid],
                                        $seg->start, $seg->end);
-                $refInfo->{"seqDir"} = $refDir;
                 $refInfo->{"seqChunkSize"} = $chunkSize;
             }
 
@@ -167,11 +171,9 @@ sub run {
             };
 
             unless ($self->opt('noseq')) {
-                my $refDir = catdir( $seqDir, $refInfo->{"name"} );
-                $self->exportSeqChunks($refDir, $compress, $chunkSize, $db,
+                $self->exportSeqChunks( $refInfo, $chunkSize, $db,
                                        [-name => $ref],
                                        $seg->start, $seg->end);
-                $refInfo->{"seqDir"} = catdir( $seqRel, $refInfo->{"name"} );
                 $refInfo->{"seqChunkSize"} = $chunkSize;
             }
 
@@ -184,7 +186,7 @@ sub run {
         exit;
     }
 
-    JsonGenerator::modifyJsonFile( catfile( $self->opt('out'), 'seq', 'refSeqs.json' ),
+    $self->{storage}->modify( 'seq/refSeqs.json',
                                    sub {
                                        #add new ref seqs while keeping the order
                                        #of the existing ref seqs
@@ -214,7 +216,7 @@ sub run {
     }
 
     unless( $self->opt('noseq') ) {
-        JsonGenerator::modifyJsonFile( catfile( $self->opt('out'), "trackList.json" ),
+        $self->{storage}->modify( 'trackList.json',
                                        sub {
                                            my $trackList = shift;
                                            unless (defined($trackList)) {
@@ -237,7 +239,7 @@ sub run {
                                            'key' => $seqTrackName,
                                            'type' => "SequenceTrack",
                                            'chunkSize' => $chunkSize,
-                                           'urlTemplate' => "$seqRel/{refseq}/",
+                                           'urlTemplate' => $self->seqUrlTemplate,
                                            ( $compress ? ( 'compress' => 1 ): () ),
                                        };
                                            return $trackList;
@@ -257,10 +259,51 @@ sub refName {
     return $segName;
 }
 
-sub exportSeqChunks {
-    my ( $self, $dir, $compress, $chunkSize, $db, $segDef, $start, $end ) = @_;
+sub openChunkFile {
+    my ( $self, $refInfo, $chunkNum ) = @_;
 
-    mkdir $dir unless -d $dir;
+    my $compress = $self->opt('compress');
+
+    my ( $dir, $file ) = $self->opt('nohash')
+        # old style
+        ? ( catdir( $self->opt('out'), 'seq',
+                    $refInfo->{name}
+                    ),
+            "$chunkNum.txt"
+          )
+        # new hashed structure
+        : ( catdir( $self->opt('out'), 'seq',
+                    $self->_crc32_path( $refInfo->{name} )
+                  ),
+            "$refInfo->{name}-$chunkNum.txt"
+          );
+
+    $file .= 'z' if $compress;
+
+    mkpath( $dir );
+    open my $fh, '>'.($compress ? ':gzip' : ''), catfile( $dir, $file )
+        or die "$! writing $file";
+    return $fh;
+}
+
+sub _crc32_path {
+    my ( $self, $str ) = @_;
+    my $crc = ( $self->{crc} ||= do { require Digest::Crc32; Digest::Crc32->new } )
+                ->strcrc32( $str );
+    my $hex = lc sprintf( '%08x', $crc );
+    return catdir( $hex =~ /(.{1,3})/g );
+}
+
+sub seqUrlTemplate {
+    my ( $self ) = @_;
+    return $self->opt('nohash')
+        ? "seq/{refseq}/"                   # old style
+        : "seq/{refseq_dirpath}/{refseq}-"; # new hashed structure
+}
+
+sub exportSeqChunks {
+    my ( $self, $refInfo, $chunkSize, $db, $segDef, $start, $end ) = @_;
+
     $start = 1 if $start < 1;
     $db->absolute( 1 ) if $db->can('absolute');
 
@@ -283,9 +326,8 @@ sub exportSeqChunks {
         $chunkStart = $chunkEnd + 1;
         next unless $seg && $seg->seq && $seg->seq->seq;
 
-        my $path = File::Spec->catfile( "$dir", "$chunkNum.txt" .( $compress ? 'z' : '' ));
-        open my $chunkfile, '>'.($compress ? ':gzip' : ''), $path or die "$! writing $path";
-        $chunkfile->print( $seg->seq->seq );
+        $self->openChunkFile( $refInfo, $chunkNum )
+             ->print( $seg->seq->seq );
     }
 }
 

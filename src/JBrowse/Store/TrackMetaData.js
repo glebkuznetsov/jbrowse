@@ -3,9 +3,10 @@ define(
         'dojo/_base/declare',
         'dojo/_base/array',
         'dojo/data/util/simpleFetch',
-        'JBrowse/Util'
+        'JBrowse/Util',
+        'JBrowse/Digest/Crc32'
     ],
-    function( declare, dArray, simpleFetch, Util ) {
+    function( declare, dArray, simpleFetch, Util, Crc32 ) {
 var dojof = Util.dojof;
 var Meta = declare( null,
 
@@ -73,6 +74,7 @@ var Meta = declare( null,
                     metarecord.label = conf.label;
                     metarecord.key = conf.key;
                     metarecord.conf = conf;
+                    metarecord['track type'] = conf.type;
                     if( conf.category )
                         metarecord.category = conf.category;
                     return metarecord;
@@ -372,10 +374,17 @@ var Meta = declare( null,
     },
 
     isItemLoaded: function() {
-        return true;
+        return this.ready;
     },
 
     loadItem: function( args ) {
+    },
+
+    getItem: function( label ) {
+        if( this.ready )
+            return this.identIndex[label];
+        else
+            return null;
     },
 
     // used by the dojo.data.util.simpleFetch mixin to implement fetch()
@@ -394,7 +403,7 @@ var Meta = declare( null,
         },this);
 
         var results;
-        var queryFingerprint = Util.objectFingerprint( query );
+        var queryFingerprint = Crc32.objectFingerprint( query );
         if( queryFingerprint == this.previousQueryFingerprint ) {
             results = this.previousResults;
         } else {

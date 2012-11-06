@@ -3,32 +3,40 @@ var _gaq = _gaq || []; // global task queue for Google Analytics
 define( [
             'dojo/_base/lang',
             'dojo/topic',
+            'dojo/aspect',
+            'dojo/_base/array',
             'dijit/layout/ContentPane',
             'dijit/layout/BorderContainer',
             'dijit/Dialog',
             'dijit/form/ComboBox',
             'dijit/form/Button',
+            'dijit/form/Select',
             'JBrowse/Util',
             'JBrowse/Store/LazyTrie',
             'JBrowse/Store/Autocomplete',
             'JBrowse/GenomeView',
             'JBrowse/TouchScreenSupport',
-            'JBrowse/ConfigManager'
+            'JBrowse/ConfigManager',
+            'JBrowse/View/InfoDialog'
         ],
         function(
             lang,
             topic,
+            aspect,
+            array,
             dijitContentPane,
             dijitBorderContainer,
             dijitDialog,
             dijitComboBox,
             dijitButton,
+            dijitSelectBox,
             Util,
             LazyTrie,
             AutocompleteStore,
             GenomeView,
             Touch,
-            ConfigManager
+            ConfigManager,
+            InfoDialog
         ) {
 
 var dojof = Util.dojof;
@@ -64,6 +72,10 @@ var Browser = function(params) {
 
     this.startTime = Date.now();
 
+    this.container = dojo.byId(this.config.containerID);
+    this.container.onselectstart = function() { return false; };
+    this.container.genomeBrowser = this;
+
     // init our touch device support
     this.addDeferred( Touch.loadTouch );
 
@@ -71,6 +83,7 @@ var Browser = function(params) {
     // process, to happen when the page is done loading
     dojo.addOnLoad( dojo.hitch( this,'loadConfig' ) );
 
+    dojo.connect( this, 'onConfigLoaded',  Util.debugHandler( this, 'loadUserCSS' ));
     dojo.connect( this, 'onConfigLoaded',  Util.debugHandler( this, 'loadRefSeqs' ));
     dojo.connect( this, 'onConfigLoaded',  Util.debugHandler( this, 'loadNames'   ));
     dojo.connect( this, 'onRefSeqsLoaded', Util.debugHandler( this, 'initView'    ));
@@ -133,6 +146,9 @@ Browser.prototype.loadRefSeqs = function() {
             load: dojo.hitch( this, function(o) {
                 this.addRefseqs(o);
                 this.onRefSeqsLoaded();
+            }),
+            error: dojo.hitch( this, function(e) {
+                this.fatalError('Failed to load reference sequence info: '+e);
             })
         });
 };
@@ -141,6 +157,18 @@ Browser.prototype.loadRefSeqs = function() {
  * Event that fires when the reference sequences have been loaded.
  */
 Browser.prototype.onRefSeqsLoaded = function() {};
+
+Browser.prototype.loadUserCSS = function() {
+    if( this.config.css && ! dojo.isArray( this.config.css ) )
+        this.config.css = [ this.config.css ];
+    dojo.forEach( this.config.css || [], function(css) {
+        if( typeof css == 'string' ) {
+            dojo.create('style', { type: 'text/css', innerHTML: css }, this.container );
+        } else if( typeof css == 'object' ) {
+            dojo.create('link', { rel: 'stylesheet', href: css.url, type: 'text/css'}, document.head );
+        }
+    },this);
+};
 
 /**
  * Load our name index.
@@ -153,19 +181,17 @@ Browser.prototype.loadNames = function() {
 
 Browser.prototype.initView = function() {
     //set up top nav/overview pane and main GenomeView pane
-    dojo.addClass(document.body, "tundra");
-    this.container = dojo.byId(this.config.containerID);
-    this.container.onselectstart = function() { return false; };
-    this.container.genomeBrowser = this;
+    dojo.addClass(document.body, this.config.theme || "tundra");
+
     var topPane = dojo.create( 'div',{ style: {overflow: 'hidden'}}, this.container );
 
     var overview = dojo.create( 'div', { className: 'overview', id: 'overview' }, topPane );
     // overview=0 hides the overview, but we still need it to exist
-    if( this.config.show_overview == 0 )
+    if( ! this.config.show_overview )
         overview.style.cssText = "display: none";
 
-    if( this.config.show_nav != 0 )
-        this.navbox = this.createNavBox( topPane, 25 );
+    if( this.config.show_nav )
+        this.navbox = this.createNavBox( topPane );
 
     // make our little top-links box with links to help, etc.
     var linkContainer = dojo.create('div', { className: 'topLink' });
@@ -176,15 +202,15 @@ Browser.prototype.initView = function() {
         title: 'powered by JBrowse'
      }, linkContainer );
 
-    var embedded = this.config.show_nav == 0 || this.config.show_tracklist == 0 || this.config.show_overview == 0;
-    if( embedded )
-        linkContainer.appendChild( this.makeFullViewLink() );
-    else
+    if( this.config.show_nav && this.config.show_tracklist && this.config.show_overview )
         linkContainer.appendChild( this.makeShareLink() );
+    else
+        linkContainer.appendChild( this.makeFullViewLink() );
 
-    if( this.config.show_nav != 0 )
+    if( this.config.show_nav )
         linkContainer.appendChild( this.makeHelpDialog()   );
-    ( this.config.show_nav == 0 ? this.container : this.navbox ).appendChild( linkContainer );
+
+    ( this.config.show_nav ? this.navbox : this.container ).appendChild( linkContainer );
 
 
     this.viewElem = document.createElement("div");
@@ -200,7 +226,7 @@ Browser.prototype.initView = function() {
         new dijitContentPane({region: "top"}, topPane);
 
     //create location trapezoid
-    if( this.config.show_nav != 0 ) {
+    if( this.config.show_nav ) {
         this.locationTrap = dojo.create('div', {className: 'locationTrap'}, topPane );
         this.locationTrap.className = "locationTrap";
     }
@@ -217,47 +243,49 @@ Browser.prototype.initView = function() {
     dojo.connect( this.browserWidget, "resize", this,      'onResize' );
     dojo.connect( this.browserWidget, "resize", this.view, 'onResize' );
 
+    // (this stuff below is just a callback pyramid to make it synchronous)
+    // init the track metadata
+    this.initTrackMetadata( dojo.hitch(this, function() {
+        //set up the track list
+        this.createTrackList( dojo.hitch( this, function(){
+            this.containerWidget.startup();
+            this.onResize();
+            this.view.onResize();
 
-    //set up track list
-//    this.createTrackList( dojo.hitch(this, function(){this.containerWidget.startup();}));
-    this.createTrackList( dojo.hitch( this, function(){
-        this.containerWidget.startup();
-        this.onResize();
-        this.view.onResize();
+            //set initial location
+            var oldLocMap = dojo.fromJson( this.cookie('location') ) || {};
+            if (this.config.location) {
+                this.navigateTo(this.config.location);
+            } else if (oldLocMap[this.refSeq.name]) {
+                this.navigateTo( oldLocMap[this.refSeq.name].l || oldLocMap[this.refSeq.name] );
+            } else if (this.config.defaultLocation){
+                this.navigateTo(this.config.defaultLocation);
+            } else {
+                this.navigateTo( Util.assembleLocString({
+                                     ref:   this.refSeq.name,
+                                     start: 0.4 * ( this.refSeq.start + this.refSeq.end ),
+                                     end:   0.6 * ( this.refSeq.start + this.refSeq.end )
+                                 })
+                               );
+            }
 
-        //set initial location
-        var oldLocMap = dojo.fromJson( this.cookie('location') ) || {};
-        if (this.config.location) {
-            this.navigateTo(this.config.location);
-        } else if (oldLocMap[this.refSeq.name]) {
-            this.navigateTo( oldLocMap[this.refSeq.name].l || oldLocMap[this.refSeq.name] );
-        } else if (this.config.defaultLocation){
-            this.navigateTo(this.config.defaultLocation);
-        } else {
-            this.navigateTo( Util.assembleLocString({
-                                 ref:   this.refSeq.name,
-                                 start: 0.4 * ( this.refSeq.start + this.refSeq.end ),
-                                 end:   0.6 * ( this.refSeq.start + this.refSeq.end )
-                             })
-                           );
-        }
+            // make our global keyboard shortcut handler
+            dojo.connect( document.body, 'onkeypress', this, 'globalKeyHandler' );
 
-        // make our global keyboard shortcut handler
-        dojo.connect( document.body, 'onkeypress', this, 'globalKeyHandler' );
+            // configure our event routing
+            this._initEventRouting();
 
-        // configure our event routing
-        this._initEventRouting();
+            this.isInitialized = true;
 
-        this.isInitialized = true;
+            //if someone calls methods on this browser object
+            //before it's fully initialized, then we defer
+            //those functions until now
+            dojo.forEach( this.deferredFunctions, function(f) {
+                f.call(this);
+            },this );
 
-        //if someone calls methods on this browser object
-        //before it's fully initialized, then we defer
-        //those functions until now
-        dojo.forEach( this.deferredFunctions, function(f) {
-            f.call(this);
-        },this );
-
-        this.deferredFunctions = [];
+            this.deferredFunctions = [];
+        }));
     }));
 };
 
@@ -327,6 +355,62 @@ Browser.prototype._reportCustomUsageStats = function(stats) {
         },
         document.body
     );
+};
+
+
+/**
+ * Get a store object from the store registry, loading its code and
+ * instantiating it if necessary.
+ */
+Browser.prototype.getStore = function( storeName, callback ) {
+    if( !callback ) throw 'invalid arguments';
+
+    var storeCache = this._storeCache || {};
+    this._storeCache = storeCache;
+
+    var storeRecord = storeCache[ storeName ];
+    if( storeRecord ) {
+        storeRecord.refCount++;
+        callback( storeRecord.store );
+        return;
+    }
+
+    var conf = this.config.stores[storeName];
+    if( ! conf ) {
+        console.error( "store "+storeName+" not defined" );
+        callback( null );
+        return;
+    }
+
+    var storeClassName = conf.type;
+    if( ! storeClassName ) {
+        console.warn( "store "+storeName+" has no type defined" );
+        callback( null );
+        return;
+    }
+
+    require( [ storeClassName ], dojo.hitch( this, function( storeClass ) {
+                 var storeArgs = dojo.mixin( dojo.clone(conf),
+                                             {
+                                                 browser: this,
+                                                 refSeq: this.refSeq
+                                             });
+                 var store = new storeClass( storeArgs );
+                 this._storeCache[ storeName ] = { refCount: 1, store: store };
+                 callback( store );
+             }));
+};
+
+/**
+ * Notifies the browser that the given named store is no longer being
+ * used by the calling component.  Decrements the store's reference
+ * count, and if the store's reference count reaches zero, the store
+ * object will be discarded, to be recreated again later if needed.
+ */
+Browser.prototype.releaseStore = function( storeName ) {
+    var storeRecord = this._storeCache[storeName];
+    if( storeRecord && ! --storeRecord.refCount )
+        delete this._storeCache[storeName];
 };
 
 Browser.prototype._calculateClientStats = function() {
@@ -441,7 +525,7 @@ Browser.prototype.addRecentlyUsedTracks = function( trackLabels ) {
  *  @returns nothing meaningful
  */
 Browser.prototype.loadConfig = function () {
-    var c = new ConfigManager({ config: this.config, browser: this });
+    var c = new ConfigManager({ config: this.config, defaults: this._configDefaults(), browser: this });
     c.getFinalConfig( dojo.hitch(this, function( finishedConfig ) {
                 this.config = finishedConfig;
 
@@ -455,6 +539,15 @@ Browser.prototype.loadConfig = function () {
      }));
 };
 
+Browser.prototype._configDefaults = function() {
+    return {
+        tracks: [],
+        show_tracklist: true,
+        show_nav: true,
+        show_overview: true
+    };
+};
+
 /**
  * Hook run after the configuration is all loaded.
  */
@@ -463,6 +556,10 @@ Browser.prototype.onConfigLoaded = function() {
     dojo.forEach( ['show_tracklist','show_nav','show_overview'], function(v) {
         this.config[v] = this._coerceBoolean( this.config[v] );
     },this);
+
+    // set empty tracks array if we have none
+    if( ! this.config.tracks )
+        this.config.tracks = [];
 };
 
 /**
@@ -484,6 +581,9 @@ Browser.prototype._coerceBoolean = function(val) {
     }
     else if( typeof val == 'boolean' ) {
         return val;
+    }
+    else if( typeof val == 'number' ) {
+        return !!val;
     }
     else {
         return true;
@@ -553,26 +653,9 @@ Browser.prototype.onFineMove = function(startbp, endbp) {
 };
 
 /**
- * Asynchronously create the track list.
- * @private
+ * Asynchronously initialize our track metadata.
  */
-Browser.prototype.createTrackList = function( callback ) {
-
-    if( ! this.config.tracks )
-        this.config.tracks = [];
-
-    // set a default baseUrl in each of the track confs if needed
-    if( this.config.sourceUrl ) {
-        dojo.forEach( this.config.tracks, function(t) {
-            if( ! t.baseUrl )
-                t.baseUrl = this.config.baseUrl;
-        },this);
-    }
-
-    // find the tracklist class to use
-    var tl_class = this.config.show_tracklist == 0       ? 'Null'                         :
-                   (this.config.trackSelector||{}).type  ? this.config.trackSelector.type :
-                                                           'Simple';
+Browser.prototype.initTrackMetadata = function( callback ) {
     var metaDataSourceClasses = dojo.map(
                                 (this.config.trackMetadata||{}).sources || [],
                                 function( sourceDef ) {
@@ -593,23 +676,39 @@ Browser.prototype.createTrackList = function( callback ) {
                                 });
 
 
-    // load all the classes we need
-    require( Array.prototype.concat.apply( ['JBrowse/View/TrackList/'+tl_class, 'JBrowse/Store/TrackMetaData'],
-                                           dojo.map( metaDataSourceClasses, function(c) { return c.class_; } )
-                                         ),
-             dojo.hitch( this, function( trackListClass, MetaDataStore ) { // more args after the first 2
+    require( Array.prototype.concat.apply( ['JBrowse/Store/TrackMetaData'],
+                                           dojo.map( metaDataSourceClasses, function(c) { return c.class_; } ) ),
+             dojo.hitch(this,function( MetaDataStore ) {
                  var mdStores = [];
-                 for( var i = 2; i<arguments.length; i++ ) {
-                     mdStores.push( new (arguments[i])({url: metaDataSourceClasses[i-2].url}) );
+                 for( var i = 1; i<arguments.length; i++ ) {
+                     mdStores.push( new (arguments[i])({url: metaDataSourceClasses[i-1].url}) );
                  }
 
-                 var trackMeta =  new MetaDataStore(
-                     dojo.mixin( this.config.trackMetadata || {}, {
+                 this.trackMetaDataStore =  new MetaDataStore(
+                     dojo.mixin( dojo.clone(this.config.trackMetadata || {}), {
                                      trackConfigs: this.config.tracks,
                                      browser: this,
                                      metadataStores: mdStores
                                  })
                  );
+
+                 callback();
+    }));
+};
+
+/**
+ * Asynchronously create the track list.
+ * @private
+ */
+Browser.prototype.createTrackList = function( callback ) {
+    // find the tracklist class to use
+    var tl_class = !this.config.show_tracklist           ? 'Null'                         :
+                   (this.config.trackSelector||{}).type  ? this.config.trackSelector.type :
+                                                           'Simple';
+
+    // load all the classes we need
+    require( ['JBrowse/View/TrackList/'+tl_class],
+             dojo.hitch( this, function( trackListClass ) {
 
                  // instantiate the tracklist and the track metadata object
                  this.trackListView = new trackListClass(
@@ -618,7 +717,7 @@ Browser.prototype.createTrackList = function( callback ) {
                          {
                              trackConfigs: this.config.tracks,
                              browser: this,
-                             trackMetaData: trackMeta
+                             trackMetaData: this.trackMetaDataStore
                          }
                      )
                  );
@@ -699,9 +798,11 @@ Browser.prototype.navigateTo = function(loc) {
             } catch (x) {}
             if( oldLoc ) {
                 this.navigateToLocation( oldLoc );
+                return;
             } else {
                 // if we don't just go to the middle 80% of that refseq
                 this.navigateToLocation({ref: ref.name, start: ref.end*0.1, end: ref.end*0.9 });
+                return;
             }
         }
 
@@ -786,7 +887,17 @@ Browser.prototype.searchNames = function( /**String*/ loc ) {
                              + ":" + (startbp - flank)
                              + ".." + (endbp + flank));
             brwsr.showTracks(brwsr.names.extra[nameMatches[0][ post1_4 ? 1 : 0 ]]);
-        });
+        },
+        // if no match for the name is found, show a popup dialog saying this.
+        function() {
+            new InfoDialog(
+                {
+                    title: 'Not found',
+                    content: 'Not found: <span class="locString">'+loc+'</span>',
+                    className: 'notfound-dialog'
+                }).show();
+        }
+   );
 };
 
 
@@ -822,19 +933,6 @@ Browser.prototype.showTracks = function( trackNames ) {
     // publish some events with the tracks to instruct the views to show them.
     this.publish( '/jbrowse/v1/c/tracks/show', trackConfs );
     this.publish( '/jbrowse/v1/n/tracks/visibleChanged' );
-};
-
-/**
- * @returns {String} locstring representation of the current location<br>
- * (suitable for passing to navigateTo)
- */
-
-Browser.prototype.visibleRegion = function() {
-    return Util.assembleLocString({
-               ref:   this.view.ref.name,
-               start: this.view.minVisible(),
-               end:   this.view.maxVisible()
-           });
 };
 
 Browser.prototype.makeHelpDialog = function () {
@@ -895,7 +993,7 @@ Browser.prototype.makeHelpDialog = function () {
         ;
     this.container.appendChild( helpdiv );
 
-    var dialog = new dijitDialog({
+    var dialog = new InfoDialog({
         "class": 'help_dialog',
         refocus: false,
         draggable: false,
@@ -953,8 +1051,7 @@ Browser.prototype.makeShareLink = function () {
         return null;
 
     var browser = this;
-    var viewURL = '#';
-
+    var shareURL = '#';
 
     // make the share link
     var link = dojo.create(
@@ -968,9 +1065,8 @@ Browser.prototype.makeShareLink = function () {
                 position: 'relative'
             },
             onclick: function() {
-                console.log('click!');
-                URLinput.value = viewURL;
-                previewLink.href = viewURL;
+                URLinput.value = shareURL;
+                previewLink.href = shareURL;
 
                 sharePane.show();
 
@@ -980,8 +1076,9 @@ Browser.prototype.makeShareLink = function () {
                                right: 0,
                                left: ''
                             });
-                URLinput.select();
                 URLinput.focus();
+                URLinput.select();
+                copyReminder.style.display = 'block';
 
                 return false;
             }
@@ -993,33 +1090,41 @@ Browser.prototype.makeShareLink = function () {
         'div', {
             innerHTML: 'Paste this link in <b>email</b> or <b>IM</b>'
         });
+    var copyReminder = dojo.create('div', {
+                                       className: 'copyReminder',
+                                       innerHTML: 'Press CTRL-C to copy'
+                                   });
     var URLinput = dojo.create(
         'input', {
             type: 'text',
-            value: viewURL,
+            value: shareURL,
             size: 50,
-            onclick: function() { this.select(); }
+            readonly: 'readonly',
+            onclick: function() { this.select();  copyReminder.style.display = 'block'; },
+            onblur: function() { copyReminder.style.display = 'none'; }
         });
     var previewLink = dojo.create('a', {
         innerHTML: 'preview',
         target: '_blank',
-        href: viewURL,
+        href: shareURL,
         style: { display: 'block', "float": 'right' }
     }, container );
     var sharePane = new dijitDialog(
         {
             className: 'sharePane',
             title: 'Share this view',
+            draggable: false,
             content: [
                 container,
-                URLinput
+                URLinput,
+                copyReminder
             ],
             autofocus: false
         });
 
     // connect moving and track-changing events to update it
-    var update_sharelink = dojo.hitch(this,function() {
-                viewURL = "".concat(
+    var updateShareURL = dojo.hitch(this,function() {
+                shareURL = "".concat(
                     window.location.protocol,
                     "//",
                     window.location.host,
@@ -1027,14 +1132,14 @@ Browser.prototype.makeShareLink = function () {
                     "?",
                     dojo.objectToQuery(
                         {
-                            loc:    browser.visibleRegion(),
+                            loc:    browser.view.visibleRegionLocString(),
                             tracks: browser.view.visibleTrackNames().join(','),
                             data:   browser.config.queryParams.data
                         })
                 );
     });
-    dojo.connect( this, "onCoarseMove",             update_sharelink );
-    this.subscribe( '/jbrowse/v1/v/tracks/changed', update_sharelink );
+    dojo.connect( this, "onCoarseMove",             updateShareURL );
+    this.subscribe( '/jbrowse/v1/v/tracks/changed', updateShareURL );
 
     return link;
 };
@@ -1058,7 +1163,7 @@ Browser.prototype.makeFullViewLink = function () {
                    window.location.pathname,
                    "?",
                    dojo.objectToQuery({
-                       loc:    this.visibleRegion(),
+                       loc:    this.view.visibleRegionLocString(),
                        tracks: this.view.visibleTrackNames().join(','),
                        data:   this.config.queryParams.data
                    })
@@ -1089,14 +1194,26 @@ Browser.prototype.onCoarseMove = function(startbp, endbp) {
 
     //since this method gets triggered by the initial GenomeView.sizeInit,
     //we don't want to save whatever location we happen to start at
-    if (! this.isInitialized) return;
-    var locString = Util.assembleLocString({ start: startbp, end: endbp, ref: this.refSeq.name });
+    if( ! this.isInitialized ) return;
+
+    var currRegion = { start: startbp, end: endbp, ref: this.refSeq.name };
+
+    // update the location box with our current location
     if( this.locationBox ) {
-        this.locationBox.set('value',locString,false);
-        this.goButton.set('disabled',true);
+        this.locationBox.set(
+            'value',
+            Util.assembleLocStringWithLength( currRegion ),
+            false //< don't fire any onchange handlers
+        );
+        this.goButton.set( 'disabled', true ) ;
     }
+    // also update the refseq selection dropdown if present
+    if( this.refSeqSelectBox )
+        this.refSeqSelectBox.set( 'value', this.refSeq.name, false );
+
 
     // update the location and refseq cookies
+    var locString = Util.assembleLocString( currRegion );
     var oldLocMap = dojo.fromJson( this.cookie('location') ) || { "_version": 1 };
     if( ! oldLocMap["_version"] )
         oldLocMap = this._migrateLocMap( oldLocMap );
@@ -1107,6 +1224,7 @@ Browser.prototype.onCoarseMove = function(startbp, endbp) {
 
     document.title = locString;
 };
+
 /**
  * Migrate an old location map cookie to the new format that includes timestamps.
  * @private
@@ -1176,7 +1294,7 @@ Browser.prototype.cookie = function() {
  * @private
  */
 
-Browser.prototype.createNavBox = function( parent, locLength ) {
+Browser.prototype.createNavBox = function( parent ) {
     var navbox = document.createElement("div");
     var browserRoot = this.config.browserRoot ? this.config.browserRoot : "";
     navbox.id = "navbox";
@@ -1269,15 +1387,63 @@ Browser.prototype.createNavBox = function( parent, locLength ) {
 
     navbox.appendChild(document.createTextNode( four_nbsp ));
 
+    // if we have fewer than 30 ref seqs, or `refSeqDropdown: true` is
+    // set in the config, then put in a dropdown box for selecting
+    // reference sequences
+    if( this.refSeqOrder.length && this.refSeqOrder.length < 30 || this.config.refSeqDropdown ) {
+        this.refSeqSelectBox = new dijitSelectBox({
+            name: 'refseq',
+            value: this.refSeq ? this.refSeq.name : null,
+            options: array.map( this.refSeqOrder || [],
+                                function( refseqName ) {
+                return { label: refseqName, value: refseqName };
+            }),
+            onChange: dojo.hitch(this, function( newRefName ) {
+                this.navigateToLocation({ ref: newRefName });
+            })
+        }).placeAt( navbox );
+    }
+
+    // calculate how big to make the location box:  make it big enough to hold the
+    var locLength = this.config.locationBoxLength || function() {
+
+        // if we have no refseqs, just use 20 chars
+        if( ! this.refSeqOrder.length )
+            return 20;
+
+        // if there are not tons of refseqs, pick the longest-named
+        // one.  otherwise just pick the last one
+        var ref = this.refSeqOrder.length < 1000
+            && function() {
+                   var longestNamedRef;
+                   array.forEach( this.refSeqOrder, function(name) {
+                                      var ref = this.allRefs[name];
+                                      if( ! ref.length )
+                                          ref.length = ref.end - ref.start + 1;
+                                      if( ! longestNamedRef || longestNamedRef.length < ref.length )
+                                          longestNamedRef = ref;
+                                  }, this );
+                   return longestNamedRef;
+               }.call(this)
+            || this.refSeqOrder.length && this.allRefs[ this.refSeqOrder[ this.refSeqOrder.length - 1 ] ]
+            || 20;
+
+        var locstring = Util.assembleLocStringWithLength({ ref: ref.name, start: ref.end-1, end: ref.end, length: ref.length });
+        //console.log( locstring, locstring.length );
+        return locstring.length;
+    }.call(this) || 20;
+
     // make the location box
     this.locationBox = new dijitComboBox(
         {
             id: "location",
             name: "location",
+            style: { width: locLength+'ex' },
+            maxLength: 400,
             store: this._makeLocationAutocompleteStore(),
             searchAttr: "name"
         },
-        dojo.create('input',{ size: locLength },navbox) );
+        dojo.create('input', {}, navbox) );
     this.locationBox.focusNode.spellcheck = false;
     dojo.query('div.dijitArrowButton', this.locationBox.domNode ).orphan();
     dojo.connect( this.locationBox.focusNode, "keydown", this, function(event) {

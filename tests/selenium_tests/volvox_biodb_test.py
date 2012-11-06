@@ -15,6 +15,8 @@ class AbstractVolvoxBiodbTest( JBrowseTest ):
         call( "bin/biodb-to-json.pl --conf docs/tutorial/conf_files/volvox.json --out sample_data/json/volvox/", shell=True )
         call( "bin/wig-to-json.pl --out sample_data/json/volvox/ --wig docs/tutorial/data_files/volvox_microarray.wig", shell=True )
         call( "bin/add-track-json.pl sample_data/raw/volvox/volvox_microarray.bw.conf sample_data/json/volvox/trackList.json", shell=True )
+        call( "bin/add-track-json.pl sample_data/raw/volvox/volvox-sorted.bam.conf sample_data/json/volvox/trackList.json", shell=True )
+        call( "bin/add-track-json.pl sample_data/raw/volvox/volvox-sorted.bam.coverage.conf sample_data/json/volvox/trackList.json", shell=True )
         call( "bin/generate-names.pl --dir sample_data/json/volvox/", shell=True )
         super( AbstractVolvoxBiodbTest, self ).setUp()
 
@@ -48,15 +50,58 @@ class AbstractVolvoxBiodbTest( JBrowseTest ):
         self.assert_element("//div[@title='search at NCBI']")
 
         # test bigwig
-        self.bigwig();
+        self.bigwig()
+
+        # test data export
+        self.export()
+
+        # test bam
+        self.bam()
 
         self.browser.close()
 
-    def bigwig( self ):
-        self.turn_on_track('volvox_microarray.bw')
-        self.assert_elements("//div[@id='track_volvox_microarray.bw']//canvas")
-        self.assert_no_js_errors()
+    def bam( self ):
+        self.do_typed_query('ctgA:18918..19070');
+        self.turn_on_track('volvox-sorted.bam');
+        self.turn_on_track('volvox-sorted Coverage');
 
+        self.assert_element('//div[contains(@class,"alignment")]/span[contains(@class,"mismatch") and contains(@class,"base_c")]');
+        self.assert_elements("//div[@id='track_volvox_sorted_bam_coverage']//canvas")
+
+
+    def export( self ):
+        self.do_typed_query('ctgA')
+
+        self.turn_on_track( 'BigWig XY' )
+        trackname = 'volvox_microarray.bw_xyplot'
+        self.export_track( trackname, 'Visible region','GFF3','View')
+        time.sleep(0.4);
+        self.close_dialog('export')
+        self.export_track( trackname, 'Whole', 'bedGraph', 'Save' )
+        self.export_track( trackname, 'Whole', 'Wiggle', 'Save' )
+
+        self.turn_on_track( 'Example Features' )
+        trackname = 'ExampleFeatures'
+        self.export_track( trackname, 'Visible region','GFF3','View')
+        time.sleep(0.4)
+        self.close_dialog('export')
+        self.export_track( trackname, 'Visible region','BED','Save')
+
+        self.do_typed_query('ctgA:8379..31627');
+        self.export_track( 'DNA', 'Visible region','FASTA','View')
+        self.assert_no_js_errors();
+        self.close_dialog('export')
+        self.assert_no_js_errors();
+
+    def bigwig( self ):
+        self.turn_on_track('BigWig XY')
+        self.assert_elements("//div[@id='track_volvox_microarray.bw_xyplot']//canvas")
+        self.assert_no_js_errors()
+        self.turn_on_track('BigWig Density')
+        self.assert_elements("//div[@id='track_volvox_microarray.bw_density']//canvas")
+        self.assert_no_js_errors()
+        self.turn_off_track('BigWig XY')
+        self.turn_off_track('BigWig Density')
 
     def sequence( self ):
         self.do_typed_query( '0..80' );
@@ -85,27 +130,21 @@ class AbstractVolvoxBiodbTest( JBrowseTest ):
 
         # right-click one of them
         self.actionchains() \
-            .move_to_element(feature_elements[20]) \
+            .context_click(feature_elements[40]) \
             .perform()
 
         # wait for the context menu to generate
-        time.sleep(0.3)
+        time.sleep(0.7)
 
-        self.actionchains() \
-            .context_click( feature_elements[20] ) \
-            .move_by_offset( 20, 55 ) \
-            .click() \
-            .perform()
+        self.menu_item_click( 'XHR HTML' )
 
         # wait for the dialog to finish fading in
-        time.sleep(0.5)
+        time.sleep(1.0)
 
         # check that the proper HTML snippet popped up in the dialog
         self.assert_element("//div[contains(@class,'dijitDialog')]//span[@class='amazingTestSnippet']")
 
-        # close the dialog
-        dialog_close = self.assert_element("//div[@class='dijitDialogTitleBar'][contains(@title,'Random XHR')]/span[contains(@class,'dijitDialogCloseIcon')]")
-        dialog_close.click()
+        self.close_dialog('Random XHR')
 
         time.sleep(0.5) # wait for it to finish fading out
 
@@ -141,6 +180,8 @@ class AbstractVolvoxBiodbTest( JBrowseTest ):
         # genes track is now selected
         label = self.assert_element( xpath )
         assert label.text == 'f15';
+
+        self.turn_off_track('Example Features')
 
 
 class VolvoxBiodbTest( AbstractVolvoxBiodbTest, unittest.TestCase ):

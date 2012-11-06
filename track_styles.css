@@ -31,6 +31,39 @@ div.hist {
 .plus-feature { background-image: url('img/plus-chevron3.png'); }
 .minus-feature { background-image: url('img/minus-chevron3.png'); }
 
+.alignment,
+.plus-alignment,
+.minus-alignment {
+    background-color: #ccc;
+
+    /* these should all 3 match */
+    height:      10px;
+    line-height: 10px;
+    font-size:   10px;
+}
+.plus-alignment {
+    background-color: #EC8B8B;
+}
+.minus-alignment {
+    background-color: #898FD8;
+}
+.alignment.missing_mate {
+    border: 2px solid red;
+}
+
+.alignment .mismatch.base {
+    height: 100%;
+}
+.alignment .mismatch.base_deletion {
+    background-color: black;
+    color: white;
+}
+
+/* .plus-alignment .mismatch, */
+/* .minus-alignment .mismatch { */
+/*     background-color: rgba( 255,255,255,0.8); */
+/* } */
+
 div.feature-hist {
     background-color: blue;
     border-color: lightblue;
@@ -376,8 +409,11 @@ div.generic_parent-hist {
     padding: 2px;
     font-family: Courier New, monospace;
     font-weight: bold;
+    cursor: default;
 }
-
-.trackVerticalPositionIndicator {
-    background: #999;
+.wigglePositionIndicator {
+    background: #555;
+    border: none;
+    width: 1px;
+    cursor: default;
 }
