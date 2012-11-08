@@ -1137,6 +1137,9 @@ Browser.prototype.makeShareLink = function () {
                             data:   browser.config.queryParams.data
                         })
                 );
+                // Most browsers should support unescape URLs and they are
+                // much easier to read.
+                shareURL = unescape(shareURL);
     });
     dojo.connect( this, "onCoarseMove",             updateShareURL );
     this.subscribe( '/jbrowse/v1/v/tracks/changed', updateShareURL );
