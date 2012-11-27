@@ -1,5 +1,22 @@
 {{$NEXT}}
 
+ * "Alignments" tracks now parse an alignment's CIGAR string if it
+   does not have an MD field, and display mismatches and skipped
+   sequence regions (particularly important for RNA-seq alignments).
+
+ * Fixed a bug with the BAM data backend in which some BAM files were
+   parsed as if they held no data.
+
+ * Fixed some bugs in server-side formatting code for feature tracks:
+   data was recorded multiple times in JSON files in some
+   circumstances.
+
+1.7.2     2012-11-09 15:40:06 America/New_York
+
+ * Fixed more bugs in BAM backends that failed to load some types of
+   BAM files, including BAM files containing no alignments.  Thanks to
+   John St. John for his assistance in isolating the problem.
+
 1.7.1     2012-11-07 11:25:39 America/New_York
 
  * Fixed bug in which bars below the origin of `Wiggle/XYPlot` were
