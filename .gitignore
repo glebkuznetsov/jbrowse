@@ -29,3 +29,6 @@ samtools/
 # gd_data is a symbolic link.
 # In order for .gitignore to properly ignore it, don't add a slash.
 gd_data
+
+
+.htaccess
