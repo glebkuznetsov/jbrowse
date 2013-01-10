@@ -7,6 +7,10 @@ html, body {
     font-family: Univers,Trebuchet MS,Helvetica,Arial,sans-serif;
 }
 
+.tundra * {
+    outline: none;
+}
+
 fieldset {
     padding-left: 1em;
     margin: 0.7em 0.5em;
@@ -122,13 +126,8 @@ div.vertical_scrollbar .vertical_position_marker {
 
 div.locationTrap {
     position: absolute;
-    background-color: #AEC7E3;
-    border-color: white white #AEC7E3 white;
-    border-style: solid;
-    width: 0px;
-    height: 0px;
-    line-height: 0px;
     z-index: -10;
+    height: 0;
 }
 
 div.locationThumb {
@@ -281,12 +280,22 @@ div.sequence .base, div.sequence > div  {
     height: 14px;
     line-height: 14px;
 }
+div.sequence .base.big {
+    -moz-box-sizing: border-box;
+    box-sizing: border-box;
+    border: 1px solid #ccc;
+    border-right-color: #333;
+    border-bottom-color: #333;
+    height: 16px;
+}
+
 div.sequence > div {
     border-top: 1px solid #4d4d4d;
     border-bottom: 1px solid black;
+    background: #C6C6C6;
 }
 div.sequence > div:first-child {
-    border-bottom-width: 0px;
+    border-bottom-color: #4d4d4d;
 }
 
 span.base {
@@ -386,6 +395,12 @@ div.track-label {
     z-index: 20;
     border-color: #eee;
     opacity: 0.7;
+
+    /* setting white-space to "nowrap" prevents Chrome-specific bug with label text sometimes disappearing after zoom in 
+       Chrome was wrapping track-lablel-text to next line, which falls outside of track-label fixed height and therefore not seen
+       see chromium bug report for more details on underlying issue: http://code.google.com/p/chromium/issues/detail?id=138918
+    */
+    white-space: nowrap;  
 }
 
 div.track-label .track-label-text {

@@ -4,6 +4,7 @@ define( [
             'dojo/_base/lang',
             'dojo/topic',
             'dojo/aspect',
+            'dojo/on',
             'dojo/_base/array',
             'dijit/layout/ContentPane',
             'dijit/layout/BorderContainer',
@@ -17,12 +18,15 @@ define( [
             'JBrowse/GenomeView',
             'JBrowse/TouchScreenSupport',
             'JBrowse/ConfigManager',
-            'JBrowse/View/InfoDialog'
+            'JBrowse/View/InfoDialog',
+            'dijit/focus',
+            'dojo/domReady!'
         ],
         function(
             lang,
             topic,
             aspect,
+            on,
             array,
             dijitContentPane,
             dijitBorderContainer,
@@ -36,7 +40,8 @@ define( [
             GenomeView,
             Touch,
             ConfigManager,
-            InfoDialog
+            InfoDialog,
+            dijitFocus
         ) {
 
 var dojof = Util.dojof;
@@ -163,9 +168,17 @@ Browser.prototype.loadUserCSS = function() {
         this.config.css = [ this.config.css ];
     dojo.forEach( this.config.css || [], function(css) {
         if( typeof css == 'string' ) {
-            dojo.create('style', { type: 'text/css', innerHTML: css }, this.container );
-        } else if( typeof css == 'object' ) {
-            dojo.create('link', { rel: 'stylesheet', href: css.url, type: 'text/css'}, document.head );
+            // if it has '{' in it, it probably is not a URL, but is a string of CSS statements
+            if( css.indexOf('{') > -1 ) {
+                    dojo.create('style', { "data-from": 'JBrowse Config', type: 'text/css', innerHTML: css }, document.head );
+            }
+            // otherwise, it must be a URL
+            else {
+                css = { url: css };
+            }
+        }
+        if( typeof css == 'object' ) {
+            dojo.create('link', { "data-from": 'JBrowse Config', rel: 'stylesheet', href: css.url, type: 'text/css'}, document.head );
         }
     },this);
 };
@@ -228,7 +241,6 @@ Browser.prototype.initView = function() {
     //create location trapezoid
     if( this.config.show_nav ) {
         this.locationTrap = dojo.create('div', {className: 'locationTrap'}, topPane );
-        this.locationTrap.className = "locationTrap";
     }
 
     // hook up GenomeView
@@ -270,7 +282,7 @@ Browser.prototype.initView = function() {
             }
 
             // make our global keyboard shortcut handler
-            dojo.connect( document.body, 'onkeypress', this, 'globalKeyHandler' );
+            on( document.body, 'keypress', dojo.hitch( this, 'globalKeyHandler' ) );
 
             // configure our event routing
             this._initEventRouting();
@@ -640,13 +652,13 @@ Browser.prototype.onFineMove = function(startbp, endbp) {
               + "left: " + trapLeft + "px;"
               + "width: " + (trapRight - trapLeft) + "px;"
               + "border-width: 0px"
-            : "top: " + this.view.overviewBox.t + "px;"
-              + "height: " + this.view.overviewBox.h + "px;"
+            : "top: " + this.view.overviewBox.h + "px;"
               + "left: " + this.view.overviewBox.l + "px;"
               + "width: " + (trapRight - trapLeft) + "px;"
-              + "border-width: " + "0px "
-              + (this.view.overviewBox.w - trapRight) + "px "
-              + this.view.locationTrapHeight + "px " + trapLeft + "px;";
+              + "border-bottom: " + this.view.locationTrapHeight + "px solid #A9C6EB;"
+              + "border-left: " + trapLeft + "px solid transparent;"
+              + "border-right: " + (this.view.overviewBox.w - trapRight) + "px solid transparent;"
+              + "border-top: 0px dotted;";
 
         this.locationTrap.style.cssText = locationTrapStyle;
     }
@@ -1042,7 +1054,11 @@ Browser.prototype.setGlobalKeyboardShortcut = function( keychar ) {
  * Key event handler that implements all global keyboard shortcuts.
  */
 Browser.prototype.globalKeyHandler = function( evt ) {
-    var shortcut = this.globalKeyboardShortcuts[ evt.keyChar ];
+    // if some digit widget is focused, don't process any global keyboard shortcuts
+    if( dijitFocus.curNode )
+        return;
+
+    var shortcut = this.globalKeyboardShortcuts[ evt.keyChar || String.fromCharCode( evt.charCode || evt.keyCode ) ];
     if( shortcut ) {
         shortcut.call( this );
         evt.stopPropagation();
